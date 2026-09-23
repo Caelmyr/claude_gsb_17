@@ -22,6 +22,8 @@
 - 按实体类型筛选
 - 实体搜索功能
 - 节点详情查看
+- 一键导出标准 JSON 图谱文件
+- 从外部 JSON 文件导入图谱，自动完成实体与关系去重合并
 
 ### 4. 智能问答 (`chat.html`)
 - 多轮对话支持
@@ -49,6 +51,7 @@ knowledge_graph_qa/
 │   │   └── pipeline.py     # NLP处理管道
 │   ├── graph/
 │   │   ├── builder.py      # 图谱构建
+│   │   ├── exchange.py     # 图谱JSON导入导出与格式兼容
 │   │   ├── query.py        # 图谱查询
 │   │   └── storage.py      # 图谱存储（JSON分片）
 │   ├── qa/
@@ -111,6 +114,8 @@ python run.py
 1. 访问"知识图谱"页面
 2. 查看力导向图谱可视化
 3. 可拖拽节点、缩放、搜索
+4. 点击"导出 JSON"下载完整图谱
+5. 点击"导入 JSON"选择外部图谱文件，系统会自动去重合并
 
 ### 步骤4：智能问答
 1. 访问"智能问答"页面
@@ -135,6 +140,42 @@ python run.py
 - 三元组: JSON文件（按文档分文件）
 - 图谱: JSON分片（按实体类型）
 - 会话: JSON文件（按会话ID）
+
+## 🔄 图谱数据交换
+
+标准导出文件结构：
+
+```json
+{
+  "format": "knowledge-graph",
+  "version": "1.0",
+  "metadata": {
+    "exported_at": "2026-01-01T12:00:00",
+    "statistics": {"total_entities": 0, "total_relations": 0}
+  },
+  "entities": [
+    {"id": "PERSON_0", "text": "张三", "type": "PERSON", "properties": {}, "count": 1}
+  ],
+  "relations": [
+    {
+      "subject": "张三",
+      "subject_type": "PERSON",
+      "predicate": "任职于",
+      "object": "某机构",
+      "object_type": "ORG",
+      "properties": {},
+      "count": 1
+    }
+  ]
+}
+```
+
+导入时兼容 `entities/nodes` 与 `relations/links/edges/triples` 命名，也支持实体和关系的常见字段别名（如 `name`、`label`、`source`、`target`、`relation`）。去重规则：
+
+- 实体：按实体文本去重；重复实体合并属性并累加 `count`。
+- 关系：按 `(主体, 关系, 客体)` 去重；重复关系合并属性并累加 `count`。
+- 如果关系引用的实体不存在，会按关系中的端点类型自动补建。
+- 无法识别的实体类型会归入 `OTHER`。
 
 ## 🎯 核心难点解决方案
 
@@ -176,6 +217,8 @@ python run.py
 - `GET /api/graph/statistics` - 获取统计信息
 - `POST /api/graph/query` - 查询图谱
 - `GET /api/graph/subgraph/:entity` - 获取子图
+- `GET /api/graph/export` - 导出标准 JSON 图谱文件
+- `POST /api/graph/import` - 导入 JSON 图谱并去重合并（支持 multipart 文件或 application/json）
 
 ### 智能问答
 - `POST /api/qa/ask` - 提问

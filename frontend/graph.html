@@ -200,6 +200,39 @@
             color: #00d2ff;
         }
 
+        /* 数据交换 */
+        .exchange-box {
+            margin-top: 20px;
+            padding-top: 18px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .exchange-box .section-title {
+            font-size: 14px;
+            color: #888;
+            margin-bottom: 10px;
+        }
+
+        #importFile {
+            display: none;
+        }
+
+        .exchange-status {
+            margin-top: 10px;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #aaa;
+            word-break: break-all;
+        }
+
+        .exchange-status.success {
+            color: #66ffcc;
+        }
+
+        .exchange-status.error {
+            color: #ff6b6b;
+        }
+
         /* 图谱容器 */
         .graph-container {
             position: relative;
@@ -419,6 +452,16 @@
                         <button class="control-btn" onclick="toggleLabels()">显示标签</button>
                         <button class="control-btn" onclick="toggleArrows()">显示箭头</button>
                         <button class="control-btn" onclick="refreshGraph()">刷新图谱</button>
+                    </div>
+
+                    <div class="exchange-box">
+                        <div class="section-title">图谱数据交换</div>
+                        <div class="controls">
+                            <button class="control-btn" onclick="exportGraph()">📥 导出 JSON</button>
+                            <button class="control-btn" onclick="document.getElementById('importFile').click()">📤 导入 JSON</button>
+                        </div>
+                        <input type="file" id="importFile" accept=".json,application/json" onchange="importGraph(event)">
+                        <div class="exchange-status" id="exchangeStatus">支持标准实体/关系 JSON，导入时自动去重合并。</div>
                     </div>
                 </div>
 
@@ -740,6 +783,76 @@
         // 刷新图谱
         function refreshGraph() {
             loadGraphData();
+        }
+
+        // 设置导入导出状态提示
+        function setExchangeStatus(message, type = '') {
+            const status = document.getElementById('exchangeStatus');
+            status.textContent = message;
+            status.className = type ? `exchange-status ${type}` : 'exchange-status';
+        }
+
+        // 导出图谱 JSON
+        async function exportGraph() {
+            setExchangeStatus('正在生成导出文件...');
+            try {
+                const response = await fetch(`${API_BASE}/api/graph/export`);
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    throw new Error(data.error || '导出失败');
+                }
+
+                const blob = await response.blob();
+                const filename = response.headers.get('Content-Disposition')
+                    ?.split('filename=')[1]
+                    ?.replace(/"/g, '') || 'knowledge_graph.json';
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+
+                setExchangeStatus('图谱 JSON 已导出。', 'success');
+            } catch (error) {
+                setExchangeStatus(`导出失败：${error.message}`, 'error');
+            }
+        }
+
+        // 导入图谱 JSON，后端会自动去重合并
+        async function importGraph(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+            setExchangeStatus(`正在导入 ${file.name} ...`);
+
+            try {
+                const response = await fetch(`${API_BASE}/api/graph/import`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || '导入失败');
+                }
+
+                const { parsed, merged, statistics } = data;
+                setExchangeStatus(
+                    `导入完成：新增实体 ${merged.entities_added}，合并实体 ${merged.entities_merged}；` +
+                    `新增关系 ${merged.relations_added}，合并关系 ${merged.relations_merged}。`,
+                    'success'
+                );
+                console.log('图谱导入结果:', { parsed, merged, statistics });
+                await loadGraphData();
+            } catch (error) {
+                setExchangeStatus(`导入失败：${error.message}`, 'error');
+            } finally {
+                event.target.value = '';
+            }
         }
 
         // 搜索实体

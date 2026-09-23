@@ -5,13 +5,15 @@ import os
 import uuid
 import json
 from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory
+from io import BytesIO
+from flask import Flask, request, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 
 from backend.utils.config import API_HOST, API_PORT, DOCUMENTS_DIR, TRIPLES_DIR
 from backend.utils.text_extractor import extract_text
 from backend.nlp.pipeline import NLPPipeline
 from backend.graph.builder import GraphBuilder
+from backend.graph.exchange import GraphExchange
 from backend.graph.storage import GraphStorage
 from backend.graph.query import GraphQuery
 from backend.qa.generator import AnswerGenerator
@@ -22,8 +24,8 @@ CORS(app)
 
 # 初始化组件
 nlp_pipeline = NLPPipeline()
-graph_builder = GraphBuilder()
 graph_storage = GraphStorage()
+graph_builder = GraphBuilder(graph_storage)
 graph_query = GraphQuery(graph_storage)
 answer_generator = AnswerGenerator(graph_storage)
 dialogue_manager = DialogueManager()
@@ -279,6 +281,59 @@ def get_statistics():
     """获取图谱统计信息"""
     stats = graph_builder.get_statistics()
     return jsonify(stats)
+
+
+# ==================== 图谱数据交换API ====================
+
+@app.route('/api/graph/export', methods=['GET'])
+def export_graph():
+    """导出当前知识图谱为标准 JSON 文件"""
+    export_data = GraphExchange.build_export(graph_storage)
+    content = json.dumps(export_data, ensure_ascii=False, indent=2).encode('utf-8')
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    return send_file(
+        BytesIO(content),
+        mimetype='application/json; charset=utf-8',
+        as_attachment=True,
+        download_name=f'knowledge_graph_{timestamp}.json'
+    )
+
+
+@app.route('/api/graph/import', methods=['POST'])
+def import_graph():
+    """从标准 JSON 文件导入图谱，并自动去重合并"""
+    if 'file' in request.files:
+        uploaded_file = request.files['file']
+        if uploaded_file.filename == '':
+            return jsonify({'error': '文件名为空'}), 400
+        if not uploaded_file.filename.lower().endswith('.json'):
+            return jsonify({'error': '仅支持导入 JSON 文件'}), 400
+        try:
+            raw_content = uploaded_file.read().decode('utf-8-sig')
+            data = json.loads(raw_content)
+        except UnicodeDecodeError:
+            return jsonify({'error': '文件编码不是 UTF-8'}), 400
+        except json.JSONDecodeError as exc:
+            return jsonify({'error': f'JSON 格式错误: {exc.msg}'}), 400
+    elif request.is_json:
+        data = request.get_json(silent=True)
+    else:
+        return jsonify({'error': '请上传 JSON 文件，或提交 application/json 数据'}), 400
+
+    try:
+        entities, relations, parse_summary = GraphExchange.parse_import(data)
+        merge_summary = graph_storage.import_graph(entities, relations)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    return jsonify({
+        'success': True,
+        'message': '图谱导入并合并完成',
+        'parsed': parse_summary,
+        'merged': merge_summary,
+        'statistics': graph_storage.get_statistics()
+    })
 
 
 # ==================== 问答API ====================
