@@ -5,7 +5,7 @@ import os
 import uuid
 import json
 from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 
 from backend.utils.config import API_HOST, API_PORT, DOCUMENTS_DIR, TRIPLES_DIR
@@ -14,17 +14,19 @@ from backend.nlp.pipeline import NLPPipeline
 from backend.graph.builder import GraphBuilder
 from backend.graph.storage import GraphStorage
 from backend.graph.query import GraphQuery
+from backend.graph.exchange import GraphExchange
 from backend.qa.generator import AnswerGenerator
 from backend.qa.dialogue import DialogueManager
 
 app = Flask(__name__, static_folder='../frontend', static_url_path='')
 CORS(app)
 
-# 初始化组件
-nlp_pipeline = NLPPipeline()
-graph_builder = GraphBuilder()
+# 初始化组件（共享同一个图谱存储实例，保证缓存一致）
 graph_storage = GraphStorage()
+nlp_pipeline = NLPPipeline()
+graph_builder = GraphBuilder(graph_storage)
 graph_query = GraphQuery(graph_storage)
+graph_exchange = GraphExchange(graph_storage)
 answer_generator = AnswerGenerator(graph_storage)
 dialogue_manager = DialogueManager()
 
@@ -279,6 +281,54 @@ def get_statistics():
     """获取图谱统计信息"""
     stats = graph_builder.get_statistics()
     return jsonify(stats)
+
+
+# ==================== 图谱导入导出API ====================
+
+@app.route('/api/graph/export', methods=['GET'])
+def export_graph():
+    """导出图谱为标准JSON文件"""
+    data = graph_exchange.export_graph()
+    filename = f"knowledge_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+    return Response(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        mimetype='application/json; charset=utf-8',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+    )
+
+
+@app.route('/api/graph/import', methods=['POST'])
+def import_graph():
+    """从JSON文件导入图谱数据，自动去重合并"""
+    data = None
+
+    # 方式一：上传JSON文件
+    if 'file' in request.files:
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': '文件名为空'}), 400
+        if not file.filename.lower().endswith('.json'):
+            return jsonify({'error': '仅支持JSON格式文件'}), 400
+        try:
+            data = json.load(file)
+        except Exception:
+            return jsonify({'error': 'JSON文件解析失败，请检查文件格式'}), 400
+    # 方式二：直接提交JSON数据
+    elif request.is_json:
+        data = request.get_json(silent=True)
+
+    if data is None:
+        return jsonify({'error': '请上传JSON文件或提交JSON数据'}), 400
+
+    report = graph_exchange.import_graph(data)
+
+    imported = (report['entities_added'] + report['entities_merged']
+                + report['relations_added'] + report['relations_merged'])
+    if report['errors'] and imported == 0:
+        return jsonify({'error': '导入失败', 'report': report}), 400
+
+    return jsonify({'success': True, 'report': report})
 
 
 # ==================== 问答API ====================

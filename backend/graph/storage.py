@@ -12,7 +12,8 @@ class GraphStorage:
     """图谱存储管理器 - 按实体类型分片"""
 
     def __init__(self):
-        self.lock = threading.Lock()
+        # 使用可重入锁：add_relation 等方法内部会嵌套调用 add_entity
+        self.lock = threading.RLock()
         self._ensure_directories()
         self._cache = {}
         self._load_all_shards()
@@ -83,6 +84,99 @@ class GraphStorage:
             if not any(r['subject'] == subject and r['predicate'] == predicate and r['object'] == obj for r in existing):
                 existing.append(relation)
                 self._save_shard(subject_type)
+
+    def merge_entity(self, entity_text: str, entity_type: str,
+                     properties: Dict = None, count: int = 1) -> str:
+        """合并实体（用于数据导入）
+
+        按 文本+类型 去重：已存在则合并属性并累加出现次数；
+        同名实体已存在于其他类型时合并到已有实体，返回 'conflict'。
+
+        Returns:
+            'added' | 'merged' | 'conflict'
+        """
+        with self.lock:
+            # 同名实体存在于其他类型分片 -> 合并到已有实体，避免重复节点
+            existing_entity = self.get_entity(entity_text)
+            if existing_entity and existing_entity['type'] != entity_type:
+                self._merge_entity_properties(existing_entity, properties, count)
+                self._save_shard(existing_entity['type'])
+                return 'conflict'
+
+            if entity_type not in self._cache:
+                self._cache[entity_type] = {'entities': {}, 'relations': []}
+
+            shard = self._cache[entity_type]
+            if entity_text in shard['entities']:
+                self._merge_entity_properties(shard['entities'][entity_text], properties, count)
+                self._save_shard(entity_type)
+                return 'merged'
+
+            shard['entities'][entity_text] = {
+                'id': f"{entity_type}_{len(shard['entities'])}",
+                'text': entity_text,
+                'type': entity_type,
+                'properties': properties or {},
+                'count': max(1, count)
+            }
+            self._save_shard(entity_type)
+            return 'added'
+
+    def _merge_entity_properties(self, entity: Dict, properties: Dict, count: int):
+        """合并实体属性与出现次数：已有属性优先，补充新属性"""
+        for key, value in (properties or {}).items():
+            entity.setdefault('properties', {}).setdefault(key, value)
+        entity['count'] = entity.get('count', 1) + max(0, count)
+
+    def merge_relation(self, subject: str, subject_type: str, predicate: str,
+                       obj: str, object_type: str, properties: Dict = None) -> str:
+        """合并关系（用于数据导入）
+
+        按 (主语, 谓语, 宾语) 在所有分片中全局去重，重复时合并属性。
+
+        Returns:
+            'added' | 'merged'
+        """
+        with self.lock:
+            # 确保实体存在（count=0：仅兜底创建，不影响已有实体的出现次数），
+            # 并获取实体的规范类型（可能因冲突合并到其他类型）
+            self.merge_entity(subject, subject_type, count=0)
+            self.merge_entity(obj, object_type, count=0)
+            subject_entity = self.get_entity(subject)
+            object_entity = self.get_entity(obj)
+            canonical_subject_type = subject_entity['type'] if subject_entity else subject_type
+            canonical_object_type = object_entity['type'] if object_entity else object_type
+
+            # 跨所有分片查重
+            existing_relation = self._find_relation(subject, predicate, obj)
+            if existing_relation:
+                for key, value in (properties or {}).items():
+                    existing_relation.setdefault('properties', {}).setdefault(key, value)
+                self._save_shard(existing_relation['subject_type'])
+                return 'merged'
+
+            if canonical_subject_type not in self._cache:
+                self._cache[canonical_subject_type] = {'entities': {}, 'relations': []}
+
+            self._cache[canonical_subject_type]['relations'].append({
+                'subject': subject,
+                'subject_type': canonical_subject_type,
+                'predicate': predicate,
+                'object': obj,
+                'object_type': canonical_object_type,
+                'properties': properties or {}
+            })
+            self._save_shard(canonical_subject_type)
+            return 'added'
+
+    def _find_relation(self, subject: str, predicate: str, obj: str) -> Optional[Dict]:
+        """在所有分片中查找关系"""
+        for shard in self._cache.values():
+            for relation in shard['relations']:
+                if (relation['subject'] == subject and relation['predicate'] == predicate
+                        and relation['object'] == obj):
+                    return relation
+        return None
 
     def get_entity(self, entity_text: str) -> Optional[Dict]:
         """获取实体信息"""

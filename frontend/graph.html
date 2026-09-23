@@ -351,6 +351,43 @@
             pointer-events: none;
             z-index: 100;
         }
+
+        /* 数据交换 */
+        .exchange-btns {
+            display: flex;
+            gap: 10px;
+        }
+
+        .exchange-btns .btn {
+            flex: 1;
+        }
+
+        .import-result {
+            margin-top: 15px;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.8;
+            display: none;
+        }
+
+        .import-result.success {
+            display: block;
+            background: rgba(102,255,204,0.1);
+            border: 1px solid rgba(102,255,204,0.3);
+        }
+
+        .import-result.error {
+            display: block;
+            background: rgba(255,107,107,0.1);
+            border: 1px solid rgba(255,107,107,0.3);
+        }
+
+        .import-result .conflict-item,
+        .import-result .error-item {
+            color: #ffb3b3;
+            font-size: 12px;
+        }
     </style>
 </head>
 <body>
@@ -420,6 +457,16 @@
                         <button class="control-btn" onclick="toggleArrows()">显示箭头</button>
                         <button class="control-btn" onclick="refreshGraph()">刷新图谱</button>
                     </div>
+                </div>
+
+                <div class="panel" style="margin-top: 20px;">
+                    <h2 class="panel-title">数据交换</h2>
+                    <div class="exchange-btns">
+                        <button class="btn btn-primary btn-sm" onclick="exportGraph()">📤 导出图谱</button>
+                        <button class="btn btn-primary btn-sm" onclick="document.getElementById('importFileInput').click()">📥 导入图谱</button>
+                    </div>
+                    <input type="file" id="importFileInput" accept=".json" style="display:none" onchange="importGraph(this)">
+                    <div class="import-result" id="importResult"></div>
                 </div>
 
                 <div class="panel" style="margin-top: 20px;">
@@ -767,6 +814,81 @@
                 activeTypes.add(type);
             }
             renderGraph();
+        }
+
+        // 导出图谱
+        async function exportGraph() {
+            try {
+                const response = await fetch(`${API_BASE}/api/graph/export`);
+                if (!response.ok) throw new Error('导出请求失败');
+
+                // 从响应头获取文件名
+                const disposition = response.headers.get('Content-Disposition') || '';
+                const match = disposition.match(/filename="?([^";]+)"?/);
+                const filename = match ? match[1] : 'knowledge_graph.json';
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                alert('导出失败: ' + error.message);
+            }
+        }
+
+        // 导入图谱
+        async function importGraph(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const resultDiv = document.getElementById('importResult');
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch(`${API_BASE}/api/graph/import`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    const r = data.report;
+                    let html = `✅ 导入完成<br>
+                        实体：新增 ${r.entities_added}，合并 ${r.entities_merged}<br>
+                        关系：新增 ${r.relations_added}，合并 ${r.relations_merged}`;
+
+                    if (r.conflicts && r.conflicts.length > 0) {
+                        html += `<br>⚠️ 类型冲突 ${r.conflicts.length} 个（已合并到现有实体）：`;
+                        r.conflicts.slice(0, 5).forEach(c => {
+                            html += `<div class="conflict-item">· ${c.text}：${c.imported_type} → ${c.existing_type}</div>`;
+                        });
+                    }
+                    if (r.errors && r.errors.length > 0) {
+                        html += `<br>⚠️ 跳过 ${r.errors.length} 条无效数据`;
+                    }
+
+                    resultDiv.className = 'import-result success';
+                    resultDiv.innerHTML = html;
+                    loadGraphData();
+                } else {
+                    resultDiv.className = 'import-result error';
+                    resultDiv.innerHTML = `❌ ${data.error || '导入失败'}`;
+                    if (data.report && data.report.errors) {
+                        data.report.errors.slice(0, 5).forEach(e => {
+                            resultDiv.innerHTML += `<div class="error-item">· ${e}</div>`;
+                        });
+                    }
+                }
+            } catch (error) {
+                resultDiv.className = 'import-result error';
+                resultDiv.innerHTML = '❌ 导入失败: ' + error.message;
+            }
+
+            input.value = '';  // 允许重复导入同一文件
         }
     </script>
 </body>

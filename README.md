@@ -36,6 +36,15 @@
 - 热门实体排行
 - 最新三元组展示
 
+### 6. 图谱导入导出 (`graph.html`)
+- 一键导出完整图谱为标准JSON文件
+- 从JSON文件导入外部图谱数据
+- 导入时自动去重合并：
+  - 实体按 文本+类型 去重，合并属性并累加出现次数
+  - 关系按 (主语, 谓语, 宾语) 去重，重复时合并属性
+  - 同名实体类型冲突时自动合并到现有实体并记录报告
+- 导入报告展示新增/合并数量与冲突明细
+
 ## 📁 项目结构
 
 ```
@@ -50,6 +59,7 @@ knowledge_graph_qa/
 │   ├── graph/
 │   │   ├── builder.py      # 图谱构建
 │   │   ├── query.py        # 图谱查询
+│   │   ├── exchange.py     # 图谱导入导出
 │   │   └── storage.py      # 图谱存储（JSON分片）
 │   ├── qa/
 │   │   ├── retriever.py    # 语义检索
@@ -176,6 +186,40 @@ python run.py
 - `GET /api/graph/statistics` - 获取统计信息
 - `POST /api/graph/query` - 查询图谱
 - `GET /api/graph/subgraph/:entity` - 获取子图
+
+### 图谱导入导出
+- `GET /api/graph/export` - 导出图谱为标准JSON文件（自动下载）
+- `POST /api/graph/import` - 导入图谱数据（支持文件上传或JSON请求体，自动去重合并）
+
+导出文件格式示例：
+```json
+{
+  "format": "knowledge-graph",
+  "version": "1.0",
+  "exported_at": "2026-09-23T12:00:00",
+  "statistics": { "total_entities": 10, "total_relations": 5 },
+  "entities": [
+    { "id": "PERSON_0", "text": "张三", "type": "PERSON", "count": 3, "properties": {} }
+  ],
+  "relations": [
+    { "subject": "张三", "subject_type": "PERSON", "predicate": "就职于",
+      "object": "某公司", "object_type": "ORG", "properties": {} }
+  ]
+}
+```
+
+导入返回报告示例：
+```json
+{
+  "success": true,
+  "report": {
+    "entities_added": 5, "entities_merged": 3,
+    "relations_added": 4, "relations_merged": 2,
+    "conflicts": [{ "text": "张三", "imported_type": "ORG", "existing_type": "PERSON" }],
+    "errors": []
+  }
+}
+```
 
 ### 智能问答
 - `POST /api/qa/ask` - 提问
